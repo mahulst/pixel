@@ -19,32 +19,30 @@ use bevy::{
     },
 };
 
+use leafwing_input_manager::prelude::*;
+
+use bevy_inspector_egui:: {
+    prelude::*,
+    quick::{
+        ResourceInspectorPlugin, WorldInspectorPlugin,
+    }
+};
+
 use crate::postprocessing::postprocessing::{PostProcessPlugin, PostProcessSettings};
 
 fn main() {
     App::new()
         .insert_resource(Msaa::Off)
+        .register_type::<CameraState>()
         // .insert_resource(DefaultOpaqueRendererMethod::deferred())
         .add_plugins(DefaultPlugins)
         .add_plugins(PostProcessPlugin)
+        .add_plugins(WorldInspectorPlugin::new())
+        .add_plugins(InputManagerPlugin::<Action>::default())
         .add_systems(Startup, setup)
-        .add_systems(Update, process_input)
-        .add_systems(Update, process_input)
-        .insert_resource(InputState::default())
+        .add_systems(Update, move_camera)
+        .add_systems(Update, update_camera)
         .run();
-}
-
-#[derive(Resource)]
-struct QuitCounter {
-    count: u32,
-}
-
-impl Default for QuitCounter {
-    fn default() -> Self {
-        QuitCounter {
-            count: 10,
-        }
-    }
 }
 
 #[derive(Default, Clone, Copy, Debug, Reflect)]
@@ -54,7 +52,24 @@ enum CameraDirection {
     SW = 5,  S = 6,  SE = 7,
 }
 
-#[derive(Default, Component, Clone, Copy, Debug, Reflect)]
+impl CameraDirection {
+    fn from(n: i32) -> CameraDirection {
+        match n {
+            0 => CameraDirection::E,
+            1 => CameraDirection::NE,
+            2 => CameraDirection::N,
+            3 => CameraDirection::NW,
+            4 => CameraDirection::W,
+            5 => CameraDirection::SW,
+            6 => CameraDirection::S,
+            7 => CameraDirection::SE,
+            _ => CameraDirection::E,
+        }
+    }
+}
+
+#[derive(Default, Component, Clone, Copy, Debug, Reflect, InspectorOptions)]
+#[reflect(Component, InspectorOptions)] 
 struct CameraState {
     target: Vec3,
     distance: f32,
@@ -68,116 +83,65 @@ struct CameraBundle {
     state: CameraState,
 }
 
-#[derive(Reflect, Clone, Copy, Debug)]
-struct InputElement<T> {
-    value: T,
-    previous: T,
-    duration: f32,
-    consumed: bool,
+fn lerp_angle(from: f32, to: f32, t: f32) -> f32 {
+    let mut angle = to - from;
+    while angle > std::f32::consts::PI {
+        angle -= std::f32::consts::TAU;
+    }
+    while angle < -std::f32::consts::PI {
+        angle += std::f32::consts::TAU;
+    }
+    from + angle * t
 }
 
-impl Default for InputElement<bool> {
-    fn default() -> Self {
-        InputElement {
-            value: false,
-            previous: false,
-            duration: 0.0,
-            consumed: false,
-        }
-    }
-}
-impl Default for InputElement<Vec2> {
-    fn default() -> Self {
-        InputElement {
-            value: Vec2::ZERO,
-            previous: Vec2::ZERO,
-            duration: 0.0,
-            consumed: false,
-        }
-    }
-}
-
-impl InputElement<bool> {
-    fn set(&mut self, value: bool) {
-        self.previous = self.value;
-        self.value = value;
-        if self.value != self.previous {
-            self.duration = 0.0;
-        }
-        self.consumed = false;
-    }
-}
-impl InputElement<Vec2> {
-    fn set(&mut self, value: Vec2) {
-        self.previous = self.value;
-        self.value = value;
-        if self.value.x != self.previous.x || self.value.y != self.previous.y {
-            // Maybe deadzone check instead here.
-            self.duration = 0.0;
-        }
-        self.consumed = false;
-    }
-}
-
-#[derive(Resource, Reflect, Clone, Copy, Debug)]
-struct InputState {
-    movement: InputElement<Vec2>,
-    action: InputElement<bool>,
-    fire: InputElement<bool>,
-    melee: InputElement<bool>,
-    dodge: InputElement<bool>,
-}
-
-impl Default for InputState {
-    fn default() -> Self {
-        InputState {
-            movement: InputElement::default(),
-            action: InputElement::default(),
-            fire: InputElement::default(),
-            melee: InputElement::default(),
-            dodge: InputElement::default(),
-        }
-    }
-}
-
-fn process_input(
-    mut kb_events: EventReader<KeyboardInput>,
-    mut inputs: ResMut<InputState>,
+fn update_camera(
+    mut camera: Query<(&mut CameraState, &mut Transform)>,
     time: Res<Time>,
 ) {
-    // Update each input's timer.
-    inputs.dodge.duration += time.delta_seconds();
-    inputs.fire.duration += time.delta_seconds();
-    inputs.melee.duration += time.delta_seconds();
-    inputs.action.duration += time.delta_seconds();
-    inputs.movement.duration += time.delta_seconds();
+    let mut camera = camera.single_mut();
+    let state = &mut camera.0;
+    let transform = &mut camera.1;
 
-    for event in kb_events.read() {
-        let mut movement: Vec2 = Vec2::ZERO;
-        match event.key_code {
-            Some(key) => {
-                match key {
-                    KeyCode::W | KeyCode::Up => {
-                        movement.y += 1.0;
-                    },
-                    KeyCode::A | KeyCode::Left => {
-                        movement.x -= 1.0;
-                    },
-                    KeyCode::S | KeyCode::Down => {
-                        movement.y -= 1.0;
-                    },
-                    KeyCode::D | KeyCode::Right => {
-                        movement.x += 1.0;
-                    },
-                    _ => {}
-                }
-            },
-            None => {}
-        }
-        inputs.movement.value = movement;
-        inputs.movement.duration = 0.0;
+    let angle = state.direction as i32 as f32 / 8.0 * std::f32::consts::TAU;
+    state.angle = lerp_angle(state.angle, angle, time.delta_seconds() * 10.0);
 
+    let tf = Transform::from_xyz(5.0 * state.angle.sin(), 2.88675, 5.0 * state.angle.cos()).looking_at(Vec3::ZERO, Vec3::Y);
+    transform.translation = tf.translation;
+    transform.rotation = tf.rotation;
+        // Transform::from_xyz(state.distance * (PI/4.0_f32).sin(), state.distance * (PI/6.0_f32.sin()), state.distance * (PI/4.0_f32).cos()).looking_at(Vec3::ZERO, Vec3::Y));
+}
+
+
+#[derive(Actionlike, PartialEq, Eq, Hash, Clone, Copy, Debug, Reflect)]
+enum Action {
+    CameraLeft,
+    CameraRight,
+}
+
+fn move_camera(
+    query: Query<&ActionState<Action>, With<Camera>>,
+    mut camera: Query<&mut CameraState>,
+) {
+    let mut camera = camera.single_mut();
+
+    let action_state = query.single();
+
+    let mut new_dir = camera.direction as i32;
+    
+    if action_state.just_pressed(Action::CameraLeft) {
+        new_dir += 1;
     }
+    if action_state.just_pressed(Action::CameraRight) {
+        new_dir -= 1;
+    }
+
+    if new_dir < 0 {
+        new_dir = 7;
+    } else if new_dir > 7 {
+        new_dir = 0;
+    }
+    
+    camera.direction = CameraDirection::from(new_dir);
 }
 
 /// set up a simple 3D scene
@@ -185,20 +149,7 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut inputs: ResMut<InputState>,
 ) {
-    // camera
-    // commands.spawn(Camera3dBundle {
-    //     projection: OrthographicProjection {
-    //         scale: 3.0,
-    //         scaling_mode: ScalingMode::FixedVertical(2.0),
-    //         ..default()
-    //     }
-    //     .into(),
-    //     transform: Transform::from_xyz(5.0, 5.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
-    //     ..default()
-    // });
-
     let resolution = Vec2::new(640.0, 480.0);
 
     commands.spawn((
@@ -212,6 +163,10 @@ fn setup(
             transform: Transform::from_xyz(5.0 * (PI/4.0_f32).sin(), 2.88675, 5.0 * (PI/4.0_f32).cos()).looking_at(Vec3::ZERO, Vec3::Y),
             ..default()
         },
+        InputManagerBundle {
+            action_state: ActionState::<Action>::default(),
+            input_map: InputMap::new([(KeyCode::A, Action::CameraLeft), (KeyCode::D, Action::CameraRight)]),
+        },
         CameraState {
             target: Vec3::ZERO,
             distance: 8.66,
@@ -219,7 +174,7 @@ fn setup(
             direction: CameraDirection::NW,
         },
         PostProcessSettings {
-            intensity: 0.02,
+            intensity: 0.0,
             resolution: resolution,
             pixel_scale: 4.0,
             ..default()
