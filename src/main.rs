@@ -23,7 +23,7 @@ use crate::postprocessing::postprocessing::{PostProcessPlugin, PostProcessSettin
 
 fn main() {
     App::new()
-        // .insert_resource(Msaa::Off)
+        .insert_resource(Msaa::Off)
         // .insert_resource(DefaultOpaqueRendererMethod::deferred())
         .add_plugins(DefaultPlugins)
         .add_plugins(PostProcessPlugin)
@@ -225,7 +225,9 @@ fn setup(
             ..default()
         },
         DepthPrepass,
+        NormalPrepass,
         MotionVectorPrepass,
+        DeferredPrepass,
     ));
 
     // plane
