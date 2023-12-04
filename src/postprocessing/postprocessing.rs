@@ -1,7 +1,7 @@
 use bevy::{
   core_pipeline::{
       core_3d,
-      fullscreen_vertex_shader::fullscreen_shader_vertex_state,
+      fullscreen_vertex_shader::fullscreen_shader_vertex_state, prepass::ViewPrepassTextures,
   },
   ecs::query::QueryItem,
   prelude::*,
@@ -111,7 +111,10 @@ impl ViewNode for PostProcessNode {
     // but it's not a normal system so we need to define it manually.
     //
     // This query will only run on the view entity
-    type ViewQuery = &'static ViewTarget;
+    type ViewQuery = (
+        &'static ViewTarget,
+        &'static ViewPrepassTextures,
+    );
 
     // Runs the node logic
     // This is where you encode draw commands.
@@ -124,7 +127,7 @@ impl ViewNode for PostProcessNode {
         &self,
         _graph: &mut RenderGraphContext,
         render_context: &mut RenderContext,
-        view_target: QueryItem<Self::ViewQuery>,
+        (view_target, prepass_textures): QueryItem<Self::ViewQuery>,
         world: &World,
     ) -> Result<(), NodeRunError> {
         // Get the pipeline resource that contains the global data we need
@@ -157,6 +160,10 @@ impl ViewNode for PostProcessNode {
         // the current main texture information to be lost.
         let post_process = view_target.post_process_write();
 
+        let (Some(prepass_depth_texture), Some(prepass_normal_texture)) = (&prepass_textures.depth, &prepass_textures.normal) else {
+            return Ok(());
+        };
+
         // The bind_group gets created each frame.
         //
         // Normally, you would create a bind_group in the Queue set,
@@ -175,6 +182,10 @@ impl ViewNode for PostProcessNode {
                 &post_process_pipeline.sampler,
                 // Set the settings binding
                 settings_binding.clone(),
+                // Prepass depth texture
+                &prepass_depth_texture.default_view,
+                // Prepass normal texture
+                &prepass_normal_texture.default_view,
             )),
         );
 
@@ -243,6 +254,28 @@ impl FromWorld for PostProcessPipeline {
                         ty: bevy::render::render_resource::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: Some(PostProcessSettings::min_size()),
+                    },
+                    count: None,
+                },
+                // Depth prepass texture
+                BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Texture {
+                        sample_type: TextureSampleType::Depth,
+                        view_dimension: TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // Normal prepass texture
+                BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Texture {
+                        sample_type: TextureSampleType::Float { filterable: true },
+                        view_dimension: TextureViewDimension::D2,
+                        multisampled: false,
                     },
                     count: None,
                 },

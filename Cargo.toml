@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bevy_embedded_assets = "0.9.1"
+# bevy_embedded_assets = "0.9.1"
 bevy_framepace = "0.14.1"
 bevy-inspector-egui = "0.21.0"
 big-brain = "0.18.0"
