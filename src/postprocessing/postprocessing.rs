@@ -1,7 +1,7 @@
 use bevy::{
   core_pipeline::{
       core_3d,
-      fullscreen_vertex_shader::fullscreen_shader_vertex_state, prepass::ViewPrepassTextures,
+      fullscreen_vertex_shader::fullscreen_shader_vertex_state, prepass::{ViewPrepassTextures, DepthPrepass},
   },
   ecs::query::QueryItem,
   prelude::*,
@@ -22,7 +22,7 @@ use bevy::{
       },
       renderer::{RenderContext, RenderDevice},
       texture::BevyDefault,
-      view::ViewTarget,
+      view::{ViewTarget, ViewUniforms, ViewUniform},
       RenderApp,
   }, window::WindowResized,
 };
@@ -164,6 +164,12 @@ impl ViewNode for PostProcessNode {
             return Ok(());
         };
 
+        // Grab the view uniforms from the world since we can't use a query for this in a ViewNode.
+        let Some(view_uniforms_resource) = world.get_resource::<ViewUniforms>() else {
+            return Ok(());
+        };
+        let view_uniforms = &view_uniforms_resource.uniforms;
+
         // The bind_group gets created each frame.
         //
         // Normally, you would create a bind_group in the Queue set,
@@ -176,12 +182,14 @@ impl ViewNode for PostProcessNode {
             &post_process_pipeline.layout,
             // It's important for this to match the BindGroupLayout defined in the PostProcessPipeline
             &BindGroupEntries::sequential((
+                // View uniforms
+                view_uniforms,
+                // Set the settings binding
+                settings_binding.clone(),
                 // Make sure to use the source view
                 post_process.source,
                 // Use the sampler created for the pipeline
                 &post_process_pipeline.sampler,
-                // Set the settings binding
-                settings_binding.clone(),
                 // Prepass depth texture
                 &prepass_depth_texture.default_view,
                 // Prepass normal texture
@@ -228,9 +236,31 @@ impl FromWorld for PostProcessPipeline {
         let layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("post_process_bind_group_layout"),
             entries: &[
-                // The screen texture
+                // The settings uniform that will control the effect
                 BindGroupLayoutEntry {
                     binding: 0,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Buffer {
+                        ty: bevy::render::render_resource::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(ViewUniform::min_size()),
+                    },
+                    count: None,
+                },
+                // The settings uniform that will control the effect
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Buffer {
+                        ty: bevy::render::render_resource::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(PostProcessSettings::min_size()),
+                    },
+                    count: None,
+                },
+                // The screen texture
+                BindGroupLayoutEntry {
+                    binding: 2,
                     visibility: ShaderStages::FRAGMENT,
                     ty: BindingType::Texture {
                         sample_type: TextureSampleType::Float { filterable: true },
@@ -241,25 +271,14 @@ impl FromWorld for PostProcessPipeline {
                 },
                 // The sampler that will be used to sample the screen texture
                 BindGroupLayoutEntry {
-                    binding: 1,
+                    binding: 3,
                     visibility: ShaderStages::FRAGMENT,
                     ty: BindingType::Sampler(SamplerBindingType::Filtering),
                     count: None,
                 },
-                // The settings uniform that will control the effect
-                BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Buffer {
-                        ty: bevy::render::render_resource::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: Some(PostProcessSettings::min_size()),
-                    },
-                    count: None,
-                },
                 // Depth prepass texture
                 BindGroupLayoutEntry {
-                    binding: 3,
+                    binding: 4,
                     visibility: ShaderStages::FRAGMENT,
                     ty: BindingType::Texture {
                         sample_type: TextureSampleType::Depth,
@@ -270,7 +289,7 @@ impl FromWorld for PostProcessPipeline {
                 },
                 // Normal prepass texture
                 BindGroupLayoutEntry {
-                    binding: 4,
+                    binding: 5,
                     visibility: ShaderStages::FRAGMENT,
                     ty: BindingType::Texture {
                         sample_type: TextureSampleType::Float { filterable: true },
@@ -330,9 +349,9 @@ impl FromWorld for PostProcessPipeline {
 #[allow(bare_trait_objects)]
 #[derive(Component, Default, Clone, Copy, ExtractComponent, ShaderType)]
 pub struct PostProcessSettings {
-    pub(crate) intensity: f32,
     pub(crate) resolution: Vec2,
     pub(crate) pixel_scale: f32,
+    pub(crate) forward: Vec3,
     // WebGL2 structs must be 16 byte aligned.
     #[cfg(feature = "webgl2")]
     _webgl2_padding: Vec3,

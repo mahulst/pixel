@@ -13,6 +13,7 @@ big-brain = "0.18.0"
 serde = "1.0.192"
 rand = "0.8.5"
 leafwing-input-manager = "0.11.1"
+bevy_mod_debugdump = "0.9.0"
 
 [dependencies.bevy]
 version = "0.12.0"

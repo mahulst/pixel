@@ -7,15 +7,8 @@ use std::f32::consts::PI;
 use bevy::{
     prelude::*,
     render::camera::ScalingMode,
-    input::keyboard::KeyboardInput,
     core_pipeline::{
-        fxaa::Fxaa,
         prepass::{DepthPrepass, MotionVectorPrepass, DeferredPrepass, NormalPrepass},
-    },
-    pbr::{
-        DefaultOpaqueRendererMethod,
-        NotShadowCaster,
-        OpaqueRendererMethod,
     },
 };
 
@@ -24,14 +17,15 @@ use leafwing_input_manager::prelude::*;
 use bevy_inspector_egui:: {
     prelude::*,
     quick::{
-        ResourceInspectorPlugin, WorldInspectorPlugin,
+        WorldInspectorPlugin,
     }
 };
 
 use crate::postprocessing::postprocessing::{PostProcessPlugin, PostProcessSettings};
 
 fn main() {
-    App::new()
+    let mut app = App::new();
+    app
         .insert_resource(Msaa::Off)
         .register_type::<CameraState>()
         // .insert_resource(DefaultOpaqueRendererMethod::deferred())
@@ -43,6 +37,7 @@ fn main() {
         .add_systems(Update, move_camera)
         .add_systems(Update, update_camera)
         .run();
+    bevy_mod_debugdump::print_render_graph(&mut app);
 }
 
 #[derive(Default, Clone, Copy, Debug, Reflect)]
@@ -174,7 +169,6 @@ fn setup(
             direction: CameraDirection::NW,
         },
         PostProcessSettings {
-            intensity: 0.0,
             resolution: resolution,
             pixel_scale: 4.0,
             ..default()
@@ -211,7 +205,7 @@ fn setup(
         ..default()
     });
     commands.spawn(PbrBundle {
-        mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
+        mesh: meshes.add(Mesh::from(shape::UVSphere { radius: 0.5, sectors: 32, stacks: 16 })),
         material: materials.add(Color::rgb(0.8, 0.7, 0.6).into()),
         transform: Transform::from_xyz(-1.5, 0.5, -1.5),
         ..default()
