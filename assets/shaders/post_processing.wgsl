@@ -60,7 +60,6 @@ struct FullscreenVertexOutput {
 struct PostProcessSettings {
     resolution: vec2<f32>,
     pixel_scale: f32,
-    forward: vec3<f32>,
 #ifdef SIXTEEN_BYTE_ALIGNMENT
     // WebGL2 structs must be 16 byte aligned.
     _webgl2_padding: vec3<f32>
@@ -73,8 +72,9 @@ const DITHER = array(0.0, 0.5, 0.25, 0.75);
 
 fn linear_depth(depth: f32) -> f32 {
     let z_near: f32 = 0.1;
-    let z_far: f32 = 100.0;
-    return (1.0 / depth) * (z_far - z_near) - z_far / (z_far - z_near);
+    let z_far: f32 = 16.0;
+    var d = depth;
+    return d * (z_far - z_near) + z_near;
 }
 
 fn decode_normal(n: vec3<f32>) -> vec3<f32> {
@@ -89,16 +89,235 @@ fn sample_normal(uv: vec2<f32>) -> vec3<f32> {
     return decode_normal(textureSample(normal, texture_sampler, uv).rgb);
 }
 
+fn screen_normal(uv: vec2<f32>) -> vec3<f32> {
+    var normal = textureSample(normal, texture_sampler, uv).rgb;
+    normal = (normal * 2.0) - 1.0;
+    let inverse_view = mat3x3<f32>(
+        view.inverse_view[0].xyz,
+        view.inverse_view[1].xyz,
+        view.inverse_view[2].xyz,
+    );
+    return inverse_view * normal;
+}
 
+
+fn getDepth(uv: vec2<f32>, texel: vec2<f32>, x: f32, y: f32) -> f32 {
+    // return textureSample(depth, texture_sampler, uv + vec2<f32>(x, y) * texel);
+    return sample_depth(uv + vec2<f32>(x, y) * texel);
+}
+
+fn getNormal(uv: vec2<f32>, texel: vec2<f32>, x: f32, y: f32) -> vec3<f32> {
+    // return textureSample(normal, texture_sampler, uv + vec2<f32>(x, y) * texel ).rgb * 2.0 - 1.0;
+    let normal = screen_normal(uv + vec2<f32>(x, y) * texel);
+    if (length(normal) < 0.9) {
+        return vec3<f32>(0.0, 1.0, 0.0);
+    }
+    return normal;
+}
+
+fn neighborNormalEdgeIndicator(uv: vec2<f32>, texel: vec2<f32>, x: f32, y: f32, depth: f32, normal: vec3<f32>) -> f32 {
+    let depthDiff: f32 = depth - getDepth(uv, texel, x, y);
+
+    // Edge pixels should yield to faces closer to the bias direction.
+    let normalEdgeBias: vec3<f32> = vec3(0.25); // This should probably be a parameter.
+    let normalDiff: f32 = dot(normal - getNormal(uv, texel, x, y), normalEdgeBias);
+    let normalIndicator: f32 = clamp(smoothstep(-.01, .01, normalDiff), 0.0, 1.0);
+
+    // Only the shallower pixel should detect the normal edge.
+    let depthIndicator: f32 = clamp(sign(depthDiff * .25 + .025), 0.0, 1.0);
+
+    return (1.0 - clamp(dot(normal, getNormal(uv, texel, x, y)), 0.0, 1.0)) * depthIndicator * normalIndicator;
+    // return dot(normal.yzx, getNormal(uv, texel, x, y)) * depthIndicator * normalIndicator;
+}
+
+fn depthEdgeIndicator(uv: vec2<f32>, texel: vec2<f32>) -> f32 {
+    let depth: f32 = getDepth(uv, texel, 0.0, 0.0);
+    let normal: vec3<f32> = getNormal(uv, texel, 0.0, 0.0);
+    var diff: f32 = 0.0;
+    diff += clamp(getDepth(uv, texel, 1.0, 0.0) - depth, 0.0, 1.0);
+    diff += clamp(getDepth(uv, texel, -1.0, 0.0) - depth, 0.0, 1.0);
+    diff += clamp(getDepth(uv, texel, 0.0, 1.0) - depth, 0.0, 1.0);
+    diff += clamp(getDepth(uv, texel, 0.0, -1.0) - depth, 0.0, 1.0);
+    return floor(smoothstep(0.1, 0.2, diff) * 2.) / 2.;
+}
+
+fn normalEdgeIndicator(uv: vec2<f32>, texel: vec2<f32>) -> f32 {
+    let depth: f32 = getDepth(uv, texel, 0.0, 0.0);
+    let normal: vec3<f32> = getNormal(uv, texel, 0.0, 0.0);
+    
+    var indicator: f32 = 0.0;
+
+    indicator += neighborNormalEdgeIndicator(uv, texel, 0.0, -1.0, depth, normal);
+    indicator += neighborNormalEdgeIndicator(uv, texel, 0.0, 1.0, depth, normal);
+    indicator += neighborNormalEdgeIndicator(uv, texel, -1.0, 0.0, depth, normal);
+    indicator += neighborNormalEdgeIndicator(uv, texel, 1.0, 0.0, depth, normal);
+
+    return step(0.125, indicator);
+}
+
+fn depthEdge(uv: vec2<f32>, texel: vec2<f32>) -> f32 {
+    let d: f32 = getDepth(uv, texel, 0.0, 0.0);
+    let d_l: f32 = getDepth(uv, texel, -1.0, 0.0);
+    let d_u: f32 = getDepth(uv, texel, 0.0, -1.0);
+    let d_r: f32 = getDepth(uv, texel, 1.0, 0.0);
+    let d_d: f32 = getDepth(uv, texel, 0.0, 1.0);
+
+    // return step(d, closest);
+
+    let closest: f32 = min(min(d_l, d_r), min(d_u, d_d));
+    let closer: f32 = 1.0 - step(d, closest);
+
+    let diff: f32 = d - closest;
+    return step(0.18, diff * closer);
+    // return closer;
+}
+
+fn normalEdge(uv: vec2<f32>, texel: vec2<f32>) -> f32 {
+    // let bias_normal: vec3<f32> = vec3<f32>(0.1, 0.97, 0.11);
+    let bias_normal: vec3<f32> = vec3<f32>(0.25);
+
+    let n: vec3<f32> = getNormal(uv, texel, 0.0, 0.0);
+    let n_l: vec3<f32> = getNormal(uv, texel, -1.0, 0.0);
+    let n_u: vec3<f32> = getNormal(uv, texel, 0.0, -1.0);
+    let n_r: vec3<f32> = getNormal(uv, texel, 1.0, 0.0);
+    let n_d: vec3<f32> = getNormal(uv, texel, 0.0, 1.0);
+
+    let dot_n: f32 = dot(n, bias_normal);
+    let dot_n_l: f32 = dot(n_l, bias_normal);
+    let dot_n_u: f32 = dot(n_u, bias_normal);
+    let dot_n_r: f32 = dot(n_r, bias_normal);
+    let dot_n_d: f32 = dot(n_d, bias_normal);
+
+    let closest: f32 = max(max(dot_n_l, dot_n_r), max(dot_n_u, dot_n_d));
+    let closer: f32 = 1.0 - step(0.0, dot_n - closest);
+
+    let diff: f32 = max(max(1.0 - dot(n_l, n), 1.0 - dot(n_u, n)), max(1.0 - dot(n_r, n), 1.0 - dot(n_d, n)));
+    return step(0.1, diff * closer);
+    // return closer;
+}
+
+
+fn get_texel_size() -> vec2<f32> {
+    let px: f32 = settings.pixel_scale;
+    let res: vec2<f32> = (settings.resolution + vec2<f32>(1.0, 1.0)) / px;
+    return vec2<f32>(1.0, 1.0) / res;
+}
+
+fn pixelate_uv(uv: vec2<f32>, texel: vec2<f32>) -> vec2<f32> {
+    return floor(uv / texel) * texel + texel * 0.5;
+}
 
 @fragment
 fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+    let texel: vec2<f32> = get_texel_size();
+    let uv: vec2<f32> = pixelate_uv(in.uv, texel);
+    // let uv: vec2<f32> = in.uv;
+
+    let raw_depth: f32 = textureSample(depth, texture_sampler, uv);
+    let depth: f32 = linear_depth(raw_depth);
+    let raw_normal: vec3<f32> = textureSample(normal, texture_sampler, uv).rgb;
+    let normal: vec3<f32> = decode_normal(raw_normal);
+
+    let raw_color: vec3<f32> = textureSample(screen_texture, texture_sampler, uv).rgb;
+    var color: vec3<f32> = raw_color;
+
+    let depth_edge: f32 = depthEdge(uv, texel);
+    let normal_edge: f32 = normalEdgeIndicator(uv, texel) * step(-0.5, -depth_edge);
+
+    let mask = step(1.0, depth);
+
+    let luminance: f32 = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+
+    var hsl = rgb_to_hsl(color);
+    hsl.x = lerpf(hsl.x, 0.66, depth_edge * 0.25);
+    hsl.z = lerpf(hsl.z, 0.0, depth_edge * 0.5);
+    hsl.z = lerpf(hsl.z, 1.0, clamp(normal_edge, 0.0, 1.0) * 0.15);
+    color = hsl_to_rgb(hsl);
+
+    // color = vec3(luminance * mask);
+
+    // color.r = depth_edge;
+    // color.g = normal_edge;
+    // color.b = step(0.01, color.b);
+    // color *= mask;
+
+    // color.r *= 0.0;
+    // color.g *= 0.0;
+    // color.b *= 0.0;
+
+    let ss_normal: vec3<f32> = screen_normal(uv);
+
+    return vec4<f32>(color, 1.0);
+}
+
+fn lerpv(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
+    return a + (b - a) * t;
+}
+
+fn lerpf(a: f32, b: f32, t: f32) -> f32 {
+    return a + (b - a) * t;
+}
+
+fn rgb_to_hsl(color: vec3<f32>) -> vec3<f32> {
+    let c_max: f32 = max(max(color.r, color.g), color.b);
+    let c_min: f32 = min(min(color.r, color.g), color.b);
+    let delta: f32 = c_max - c_min;
+
+    var h: f32 = 0.0;
+    var s: f32 = 0.0;
+    let l: f32 = (c_max + c_min) / 2.0;
+
+    if (delta > 0.0) {
+        if (c_max == color.r) {
+            h = (color.g - color.b) / delta;
+        } else if (c_max == color.g) {
+            h = 2.0 + (color.b - color.r) / delta;
+        } else {
+            h = 4.0 + (color.r - color.g) / delta;
+        }
+
+        if (l < 0.5) {
+            s = delta / (c_max + c_min);
+        } else {
+            s = delta / (2.0 - c_max - c_min);
+        }
+    }
+
+    return vec3<f32>(h, s, l);
+}
+
+fn hsl_to_rgb(color: vec3<f32>) -> vec3<f32> {
+    let c: f32 = (1.0 - abs(2.0 * color.z - 1.0)) * color.y;
+    let x: f32 = c * (1.0 - abs((color.x % 2.0) - 1.0));
+    let m: f32 = color.z - c / 2.0;
+
+    var rgb: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
+
+    if (color.x < 1.0) {
+        rgb = vec3<f32>(c, x, 0.0);
+    } else if (color.x < 2.0) {
+        rgb = vec3<f32>(x, c, 0.0);
+    } else if (color.x < 3.0) {
+        rgb = vec3<f32>(0.0, c, x);
+    } else if (color.x < 4.0) {
+        rgb = vec3<f32>(0.0, x, c);
+    } else if (color.x < 5.0) {
+        rgb = vec3<f32>(x, 0.0, c);
+    } else {
+        rgb = vec3<f32>(c, 0.0, x);
+    }
+
+    return rgb + vec3<f32>(m, m, m);
+}
+
+// @fragment
+fn nope(in: FullscreenVertexOutput) ->  vec4<f32> {
     // Pixel size
     let px: f32 = settings.pixel_scale;
     // Resolution
     let res: vec2<f32> = (settings.resolution + vec2<f32>(1.0, 1.0)) / px;
     
-    let forward: vec3<f32> = settings.forward;
+    // let forward: vec3<f32> = settings.forward;
 
     // Texel size
     let texel: vec3<f32> = vec3<f32>(1.0, 1.0, 0.0) / vec3<f32>(res.x, res.y, 1.0);
@@ -110,7 +329,7 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
 
     // Dither factor
     let dither: f32 = 1.0;
-    
+
     // Pixellated UV coordinates
     let puv = vec2<f32>(pixel) / res;
 
@@ -122,7 +341,8 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let d_r: f32 = linear_depth(textureSample(depth, texture_sampler, puv + texel.xz));
     let d_d: f32 = linear_depth(textureSample(depth, texture_sampler, puv + texel.zy));
 
-    let d_diff: f32 = max(max(d - d_l, d - d_u), max(d - d_r, d - d_d));
+    // let d_diff: f32 = max(max(d - d_l, d - d_u), max(d - d_r, d - d_d));
+    let d_diff: f32 = max(max(d_l, d_r), max(d_u, d_d)) - d;
 
     let depth_threshold: f32 = 0.01;
 
@@ -139,15 +359,15 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
 
     let n = decode_normal(textureSample(normal, texture_sampler, puv).rgb);
 
-    let n_l = decode_normal(textureSample(normal, texture_sampler, puv - texel.xz).rgb);
-    let n_u = decode_normal(textureSample(normal, texture_sampler, puv - texel.zy).rgb);
-    let n_r = decode_normal(textureSample(normal, texture_sampler, puv + texel.xz).rgb);
-    let n_d = decode_normal(textureSample(normal, texture_sampler, puv + texel.zy).rgb);
+    let n_l = decode_normal(textureSample(normal, texture_sampler, puv - texel.xz * 0.5).rgb);
+    let n_u = decode_normal(textureSample(normal, texture_sampler, puv - texel.zy * 0.5).rgb);
+    let n_r = decode_normal(textureSample(normal, texture_sampler, puv + texel.xz * 0.5).rgb);
+    let n_d = decode_normal(textureSample(normal, texture_sampler, puv + texel.zy * 0.5).rgb);
 
-    let dd1 = d - d_r;
-    let dd2 = d - d_d;
+    // let dd1 = d - d_r;
+    // let dd2 = d - d_d;
 
-    let depth_diff = sqrt(pow(dd1, 2.0) + pow(dd2, 2.0)) * 100.0;
+    // let depth_diff = sqrt(pow(dd1, 2.0) + pow(dd2, 2.0)) * 100.0;
 
     let nd1 = n_l - n_r;
     let nd2 = n_u - n_d;
@@ -162,8 +382,9 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
 
     let vnorm = view.view * vec4<f32>(0.0, 0.0, 1.0, 1.0);
 
-    return vec4<f32>(view.world_position, 1.0);
-    // return vec4<f32>(d_px, forward.x, 0.0, 1.0);
+    // return vec4<f32>(view.world_position, 1.0);
+    // return vec4<f32>(abs(d_px - n_diff), d_px, n_diff, 1.0);
+    return vec4<f32>(vec3<f32>(step(0.1, d_diff)), 1.0);
 
-    // return vec4<f32>(color, 1.0);
+    // return vec4<f32>(c, 1.0);
 }

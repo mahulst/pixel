@@ -145,13 +145,15 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let resolution = Vec2::new(640.0, 480.0);
+    // let resolution = Vec2::new(640.0, 480.0);
 
     commands.spawn((
         Camera3dBundle {
             projection: OrthographicProjection {
                 scale: 3.0,
                 scaling_mode: ScalingMode::FixedVertical(2.0),
+                near: 0.1,
+                far: 16.0,
                 ..default()
             }
             .into(),
@@ -169,7 +171,6 @@ fn setup(
             direction: CameraDirection::NW,
         },
         PostProcessSettings {
-            resolution: resolution,
             pixel_scale: 4.0,
             ..default()
         },

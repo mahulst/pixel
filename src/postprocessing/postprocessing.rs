@@ -1,7 +1,7 @@
 use bevy::{
   core_pipeline::{
       core_3d,
-      fullscreen_vertex_shader::fullscreen_shader_vertex_state, prepass::{ViewPrepassTextures, DepthPrepass},
+      fullscreen_vertex_shader::fullscreen_shader_vertex_state, prepass::{ViewPrepassTextures},
   },
   ecs::query::QueryItem,
   prelude::*,
@@ -22,7 +22,7 @@ use bevy::{
       },
       renderer::{RenderContext, RenderDevice},
       texture::BevyDefault,
-      view::{ViewTarget, ViewUniforms, ViewUniform},
+      view::{ViewTarget, ViewUniforms, ViewUniform, ViewUniformOffset},
       RenderApp,
   }, window::WindowResized,
 };
@@ -82,13 +82,15 @@ impl ViewNode for PostProcessNode {
     type ViewQuery = (
         &'static ViewTarget,
         &'static ViewPrepassTextures,
+        &'static ViewUniformOffset,
+        &'static PostProcessSettings,
     );
 
     fn run(
         &self,
         _graph: &mut RenderGraphContext,
         render_context: &mut RenderContext,
-        (view_target, prepass_textures): QueryItem<Self::ViewQuery>,
+        (view_target, prepass_textures, view_uniform_offset, _): QueryItem<Self::ViewQuery>,
         world: &World,
     ) -> Result<(), NodeRunError> {
         let post_process_pipeline = world.resource::<PostProcessPipeline>();
@@ -111,16 +113,13 @@ impl ViewNode for PostProcessNode {
             return Ok(());
         };
 
-        let Some(view_uniforms_resource) = world.get_resource::<ViewUniforms>() else {
-            return Ok(());
-        };
-        let view_uniforms = &view_uniforms_resource.uniforms;
+        let view_uniforms_resource = world.resource::<ViewUniforms>();
 
         let bind_group = render_context.render_device().create_bind_group(
             "post_process_bind_group",
             &post_process_pipeline.layout,
             &BindGroupEntries::sequential((
-                view_uniforms,
+                &view_uniforms_resource.uniforms,
                 settings_binding.clone(),
                 post_process.source,
                 &post_process_pipeline.sampler,
@@ -140,7 +139,7 @@ impl ViewNode for PostProcessNode {
         });
 
         render_pass.set_render_pipeline(pipeline);
-        render_pass.set_bind_group(0, &bind_group, &[]);
+        render_pass.set_bind_group(0, &bind_group, &[view_uniform_offset.offset]);
         render_pass.draw(0..3, 0..1);
 
         Ok(())
@@ -167,7 +166,7 @@ impl FromWorld for PostProcessPipeline {
                     visibility: ShaderStages::FRAGMENT,
                     ty: BindingType::Buffer {
                         ty: bevy::render::render_resource::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
+                        has_dynamic_offset: true,
                         min_binding_size: Some(ViewUniform::min_size()),
                     },
                     count: None,
@@ -267,7 +266,6 @@ impl FromWorld for PostProcessPipeline {
 pub struct PostProcessSettings {
     pub(crate) resolution: Vec2,
     pub(crate) pixel_scale: f32,
-    pub(crate) forward: Vec3,
     // WebGL2 structs must be 16 byte aligned.
     #[cfg(feature = "webgl2")]
     _webgl2_padding: Vec3,
