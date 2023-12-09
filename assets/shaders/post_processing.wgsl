@@ -70,6 +70,123 @@ struct PostProcessSettings {
 
 const DITHER = array(0.0, 0.5, 0.25, 0.75);
 
+fn lerpv(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
+    return a + (b - a) * t;
+}
+
+fn lerpf(a: f32, b: f32, t: f32) -> f32 {
+    return a + (b - a) * t;
+}
+
+fn rgb_to_hsl(color: vec3<f32>) -> vec3<f32> {
+    let c_max: f32 = max(max(color.r, color.g), color.b);
+    let c_min: f32 = min(min(color.r, color.g), color.b);
+    let delta: f32 = c_max - c_min;
+
+    var h: f32 = 0.0;
+    var s: f32 = 0.0;
+    let l: f32 = (c_max + c_min) / 2.0;
+
+    if (delta > 0.0) {
+        if (c_max == color.r) {
+            h = (color.g - color.b) / delta;
+        } else if (c_max == color.g) {
+            h = 2.0 + (color.b - color.r) / delta;
+        } else {
+            h = 4.0 + (color.r - color.g) / delta;
+        }
+
+        if (l < 0.5) {
+            s = delta / (c_max + c_min);
+        } else {
+            s = delta / (2.0 - c_max - c_min);
+        }
+    }
+
+    return vec3<f32>(h, s, l);
+}
+
+fn hsl_to_rgb(color: vec3<f32>) -> vec3<f32> {
+    let c: f32 = (1.0 - abs(2.0 * color.z - 1.0)) * color.y;
+    let x: f32 = c * (1.0 - abs((color.x % 2.0) - 1.0));
+    let m: f32 = color.z - c / 2.0;
+
+    var rgb: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
+
+    if (color.x < 1.0) {
+        rgb = vec3<f32>(c, x, 0.0);
+    } else if (color.x < 2.0) {
+        rgb = vec3<f32>(x, c, 0.0);
+    } else if (color.x < 3.0) {
+        rgb = vec3<f32>(0.0, c, x);
+    } else if (color.x < 4.0) {
+        rgb = vec3<f32>(0.0, x, c);
+    } else if (color.x < 5.0) {
+        rgb = vec3<f32>(x, 0.0, c);
+    } else {
+        rgb = vec3<f32>(c, 0.0, x);
+    }
+
+    return rgb + vec3<f32>(m, m, m);
+}
+
+fn get_depth(uv: vec2<f32>) -> f32 {
+    return textureSample(depth, texture_sampler, uv);
+}
+
+fn get_linear_depth(uv: vec2<f32>) -> f32 {
+    let z_near: f32 = 0.1;
+    let z_far: f32 = 16.0;
+    var d: f32 = get_depth(uv);
+    return d * (z_far - z_near) + z_near;
+}
+
+fn get_normal(uv: vec2<f32>) -> vec3<f32> {
+    return textureSample(normal, texture_sampler, uv).rgb * 2.0 - 1.0;
+}
+
+fn get_ss_normal(uv: vec2<f32>) -> vec3<f32> {
+    var normal = get_normal(uv);
+    if (get_depth(uv) < 0.001) {
+        return vec3<f32>(0.0, 0.0, 0.0);
+    }
+    let inverse_view = mat3x3<f32>(
+        view.inverse_view[0].xyz,
+        view.inverse_view[1].xyz,
+        view.inverse_view[2].xyz,
+    );
+    return inverse_view * normal;
+}
+
+
+
+fn f_depth_edge(uv: vec2<f32>, texel: vec2<f32>) -> f32 {
+    let depth = get_linear_depth(uv);
+    let normal = get_ss_normal(uv);
+
+    var diff = 0.0;
+    diff += clamp(get_linear_depth(uv + vec2<f32>(1.0, 0.0) * texel) - depth, 0.0, 1.0);
+    diff += clamp(get_linear_depth(uv + vec2<f32>(-1.0, 0.0) * texel) - depth, 0.0, 1.0);
+    diff += clamp(get_linear_depth(uv + vec2<f32>(0.0, 1.0) * texel) - depth, 0.0, 1.0);
+    diff += clamp(get_linear_depth(uv + vec2<f32>(0.0, -1.0) * texel) - depth, 0.0, 1.0);
+
+    // var factor = pow(1.0 - dot(normal, vec3(0.0, 0.0, 1.0)), 3.0);
+    // factor = lerpf(0.01, 0.66, factor);
+
+    let ndotv = dot(normal, vec3(0.0, 0.0, 1.0));
+
+    let depth_threshold = 0.3;
+
+    var threshold = saturate((ndotv - depth_threshold) / (1.0 - depth_threshold));
+
+    // return dot(normal, vec3(0.0, 0.0, 1.0));
+    return floor(smoothstep(threshold, threshold * 2.0, diff) * 2.0) / 2.0;
+}
+
+
+
+
+
 fn linear_depth(depth: f32) -> f32 {
     let z_near: f32 = 0.1;
     let z_far: f32 = 16.0;
@@ -163,12 +280,23 @@ fn depthEdge(uv: vec2<f32>, texel: vec2<f32>) -> f32 {
     let d_d: f32 = getDepth(uv, texel, 0.0, 1.0);
 
     // return step(d, closest);
+    let normal = get_ss_normal(uv);
+    let ndotv = dot(normal, vec3(0.0, 0.0, 1.0));
+
+    let curve = curvature(uv, texel);
 
     let closest: f32 = min(min(d_l, d_r), min(d_u, d_d));
     let closer: f32 = 1.0 - step(d, closest);
 
+    // Bias depth edge test from curvature.
+    var bias = lerpf(0.1, 1.0, clamp(ndotv, 0.0, 1.0));
+
+    // Make bias resolution independent
+    bias *= texel.y * 256.0;
+
     let diff: f32 = d - closest;
-    return step(0.18, diff * closer);
+    return step(bias, diff * closer);
+    // return curve * 10.0;
     // return closer;
 }
 
@@ -194,6 +322,44 @@ fn normalEdge(uv: vec2<f32>, texel: vec2<f32>) -> f32 {
     let diff: f32 = max(max(1.0 - dot(n_l, n), 1.0 - dot(n_u, n)), max(1.0 - dot(n_r, n), 1.0 - dot(n_d, n)));
     return step(0.1, diff * closer);
     // return closer;
+}
+
+fn curvature(uv: vec2<f32>, texel: vec2<f32>) -> f32 {
+    let n: vec3<f32> = getNormal(uv, texel, 0.0, 0.0);
+    let n_l: vec3<f32> = getNormal(uv, texel, -1.0, 0.0);
+    let n_u: vec3<f32> = getNormal(uv, texel, 0.0, -1.0);
+    let n_r: vec3<f32> = getNormal(uv, texel, 1.0, 0.0);
+    let n_d: vec3<f32> = getNormal(uv, texel, 0.0, 1.0);
+
+    let ddx: vec3<f32> = (n_r - n_l) * 0.5;
+    let ddy: vec3<f32> = (n_d - n_u) * 0.5;
+
+    let bias_normal: vec3<f32> = vec3(0.25);
+
+    let dot_n: f32 = dot(n, bias_normal);
+    let dot_n_l: f32 = dot(n_l, bias_normal);
+    let dot_n_u: f32 = dot(n_u, bias_normal);
+    let dot_n_r: f32 = dot(n_r, bias_normal);
+    let dot_n_d: f32 = dot(n_d, bias_normal);
+
+    let d: f32 = getDepth(uv, texel, 0.0, 0.0);
+    let d_l: f32 = getDepth(uv, texel, -1.0, 0.0);
+    let d_u: f32 = getDepth(uv, texel, 0.0, -1.0);
+    let d_r: f32 = getDepth(uv, texel, 1.0, 0.0);
+    let d_d: f32 = getDepth(uv, texel, 0.0, 1.0);
+
+    let closest: f32 = 1.0 - step(max(max(dot_n_l, dot_n_r), max(dot_n_u, dot_n_d)), dot_n);
+
+    let xneg = n - ddx;
+    let xpos = n + ddx;
+    let yneg = n - ddy;
+    let ypos = n + ddy;
+
+    let depth = getDepth(uv, texel, 0.0, 0.0);
+
+    let curvature = (cross(xneg, xpos).y + cross(yneg, ypos).x) * closest;
+
+    return curvature;
 }
 
 
@@ -228,10 +394,15 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
 
     let luminance: f32 = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
 
+    var curvature = curvature(uv, texel);
+    curvature = step(0.66, abs(curvature)) * sign(curvature) * step(-0.5, -depth_edge);
+    // curvature = curvature - depth_edge;
+
+
     var hsl = rgb_to_hsl(color);
     hsl.x = lerpf(hsl.x, 0.66, depth_edge * 0.25);
     hsl.z = lerpf(hsl.z, 0.0, depth_edge * 0.5);
-    hsl.z = lerpf(hsl.z, 1.0, clamp(normal_edge, 0.0, 1.0) * 0.15);
+    // hsl.z = lerpf(hsl.z, 1.0, clamp(curvature, 0.0, 1.0) * 0.15);
     color = hsl_to_rgb(hsl);
 
     // color = vec3(luminance * mask);
@@ -245,146 +416,9 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     // color.g *= 0.0;
     // color.b *= 0.0;
 
-    let ss_normal: vec3<f32> = screen_normal(uv);
+    // color.r = clamp(curvature(uv, texel), 0.0, 1.0);
+    // color.b = mask;
+    // color.g = mask;
 
     return vec4<f32>(color, 1.0);
-}
-
-fn lerpv(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
-    return a + (b - a) * t;
-}
-
-fn lerpf(a: f32, b: f32, t: f32) -> f32 {
-    return a + (b - a) * t;
-}
-
-fn rgb_to_hsl(color: vec3<f32>) -> vec3<f32> {
-    let c_max: f32 = max(max(color.r, color.g), color.b);
-    let c_min: f32 = min(min(color.r, color.g), color.b);
-    let delta: f32 = c_max - c_min;
-
-    var h: f32 = 0.0;
-    var s: f32 = 0.0;
-    let l: f32 = (c_max + c_min) / 2.0;
-
-    if (delta > 0.0) {
-        if (c_max == color.r) {
-            h = (color.g - color.b) / delta;
-        } else if (c_max == color.g) {
-            h = 2.0 + (color.b - color.r) / delta;
-        } else {
-            h = 4.0 + (color.r - color.g) / delta;
-        }
-
-        if (l < 0.5) {
-            s = delta / (c_max + c_min);
-        } else {
-            s = delta / (2.0 - c_max - c_min);
-        }
-    }
-
-    return vec3<f32>(h, s, l);
-}
-
-fn hsl_to_rgb(color: vec3<f32>) -> vec3<f32> {
-    let c: f32 = (1.0 - abs(2.0 * color.z - 1.0)) * color.y;
-    let x: f32 = c * (1.0 - abs((color.x % 2.0) - 1.0));
-    let m: f32 = color.z - c / 2.0;
-
-    var rgb: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
-
-    if (color.x < 1.0) {
-        rgb = vec3<f32>(c, x, 0.0);
-    } else if (color.x < 2.0) {
-        rgb = vec3<f32>(x, c, 0.0);
-    } else if (color.x < 3.0) {
-        rgb = vec3<f32>(0.0, c, x);
-    } else if (color.x < 4.0) {
-        rgb = vec3<f32>(0.0, x, c);
-    } else if (color.x < 5.0) {
-        rgb = vec3<f32>(x, 0.0, c);
-    } else {
-        rgb = vec3<f32>(c, 0.0, x);
-    }
-
-    return rgb + vec3<f32>(m, m, m);
-}
-
-// @fragment
-fn nope(in: FullscreenVertexOutput) ->  vec4<f32> {
-    // Pixel size
-    let px: f32 = settings.pixel_scale;
-    // Resolution
-    let res: vec2<f32> = (settings.resolution + vec2<f32>(1.0, 1.0)) / px;
-    
-    // let forward: vec3<f32> = settings.forward;
-
-    // Texel size
-    let texel: vec3<f32> = vec3<f32>(1.0, 1.0, 0.0) / vec3<f32>(res.x, res.y, 1.0);
-    // UV coordinates
-    let uv: vec2<f32> = in.uv;
-
-    // Pixel coordinates
-    let pixel: vec2<i32> = vec2<i32>(uv * res);
-
-    // Dither factor
-    let dither: f32 = 1.0;
-
-    // Pixellated UV coordinates
-    let puv = vec2<f32>(pixel) / res;
-
-    let c: vec3<f32> = textureSample(screen_texture, texture_sampler, puv).rgb;
-
-    let d: f32 = linear_depth(textureSample(depth, texture_sampler, puv));
-    let d_l: f32 = linear_depth(textureSample(depth, texture_sampler, puv - texel.xz));
-    let d_u: f32 = linear_depth(textureSample(depth, texture_sampler, puv - texel.zy));
-    let d_r: f32 = linear_depth(textureSample(depth, texture_sampler, puv + texel.xz));
-    let d_d: f32 = linear_depth(textureSample(depth, texture_sampler, puv + texel.zy));
-
-    // let d_diff: f32 = max(max(d - d_l, d - d_u), max(d - d_r, d - d_d));
-    let d_diff: f32 = max(max(d_l, d_r), max(d_u, d_d)) - d;
-
-    let depth_threshold: f32 = 0.01;
-
-    let d_px: f32 = step(depth_threshold, d_diff);
-
-    // let d2: f32 = pow(d, 256.0);
-    let d2 = linear_depth(d);
-
-    let r = pow(round(pow(c.r, 1.0/2.2) * 16.0) / 16.0, 2.2);
-    let g = pow(round(pow(c.g, 1.0/2.2) * 16.0) / 16.0, 2.2);
-    let b = pow(round(pow(c.b, 1.0/2.2) * 16.0) / 16.0, 2.2);
-
-    let color = vec3<f32>(d_px);
-
-    let n = decode_normal(textureSample(normal, texture_sampler, puv).rgb);
-
-    let n_l = decode_normal(textureSample(normal, texture_sampler, puv - texel.xz * 0.5).rgb);
-    let n_u = decode_normal(textureSample(normal, texture_sampler, puv - texel.zy * 0.5).rgb);
-    let n_r = decode_normal(textureSample(normal, texture_sampler, puv + texel.xz * 0.5).rgb);
-    let n_d = decode_normal(textureSample(normal, texture_sampler, puv + texel.zy * 0.5).rgb);
-
-    // let dd1 = d - d_r;
-    // let dd2 = d - d_d;
-
-    // let depth_diff = sqrt(pow(dd1, 2.0) + pow(dd2, 2.0)) * 100.0;
-
-    let nd1 = n_l - n_r;
-    let nd2 = n_u - n_d;
-
-    let edge_norm = sqrt(dot(nd1, nd1) + dot(nd2, nd2));
-
-    let norm_diff = step(edge_norm, 0.5);
-
-    let n_diff = max(max(1.0 - dot(n_l, n), 1.0 - dot(n_u, n)), max(1.0 - dot(n_r, n), 1.0 - dot(n_d, n)));
-
-    let pos = view.inverse_projection * vec4<f32>(puv * 2.0 - 1.0, d2, 1.0);
-
-    let vnorm = view.view * vec4<f32>(0.0, 0.0, 1.0, 1.0);
-
-    // return vec4<f32>(view.world_position, 1.0);
-    // return vec4<f32>(abs(d_px - n_diff), d_px, n_diff, 1.0);
-    return vec4<f32>(vec3<f32>(step(0.1, d_diff)), 1.0);
-
-    // return vec4<f32>(c, 1.0);
 }

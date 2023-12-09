@@ -2,13 +2,13 @@
 
 pub mod postprocessing;
 
-use std::f32::consts::PI;
+use std::f32::consts::{PI, TAU};
 
 use bevy::{
     prelude::*,
     render::camera::ScalingMode,
     core_pipeline::{
-        prepass::{DepthPrepass, MotionVectorPrepass, DeferredPrepass, NormalPrepass},
+        prepass::{DepthPrepass, MotionVectorPrepass, DeferredPrepass, NormalPrepass}, tonemapping::DebandDither,
     },
 };
 
@@ -24,11 +24,9 @@ use bevy_inspector_egui:: {
 use crate::postprocessing::postprocessing::{PostProcessPlugin, PostProcessSettings};
 
 fn main() {
-    let mut app = App::new();
-    app
+    App::new()
         .insert_resource(Msaa::Off)
         .register_type::<CameraState>()
-        // .insert_resource(DefaultOpaqueRendererMethod::deferred())
         .add_plugins(DefaultPlugins)
         .add_plugins(PostProcessPlugin)
         .add_plugins(WorldInspectorPlugin::new())
@@ -37,7 +35,6 @@ fn main() {
         .add_systems(Update, move_camera)
         .add_systems(Update, update_camera)
         .run();
-    bevy_mod_debugdump::print_render_graph(&mut app);
 }
 
 #[derive(Default, Clone, Copy, Debug, Reflect)]
@@ -80,11 +77,14 @@ struct CameraBundle {
 
 fn lerp_angle(from: f32, to: f32, t: f32) -> f32 {
     let mut angle = to - from;
-    while angle > std::f32::consts::PI {
-        angle -= std::f32::consts::TAU;
+    while angle > PI {
+        angle -= TAU;
     }
-    while angle < -std::f32::consts::PI {
-        angle += std::f32::consts::TAU;
+    while angle < -PI {
+        angle += TAU;
+    }
+    if (angle).abs() < 0.01 {
+        return to;
     }
     from + angle * t
 }
@@ -97,7 +97,8 @@ fn update_camera(
     let state = &mut camera.0;
     let transform = &mut camera.1;
 
-    let angle = state.direction as i32 as f32 / 8.0 * std::f32::consts::TAU;
+    let mut angle = state.direction as i32 as f32 / 8.0 * TAU;
+    angle += (time.elapsed_seconds() * 1.5).sin() * 0.33;
     state.angle = lerp_angle(state.angle, angle, time.delta_seconds() * 10.0);
 
     let tf = Transform::from_xyz(5.0 * state.angle.sin(), 2.88675, 5.0 * state.angle.cos()).looking_at(Vec3::ZERO, Vec3::Y);
@@ -105,7 +106,6 @@ fn update_camera(
     transform.rotation = tf.rotation;
         // Transform::from_xyz(state.distance * (PI/4.0_f32).sin(), state.distance * (PI/6.0_f32.sin()), state.distance * (PI/4.0_f32).cos()).looking_at(Vec3::ZERO, Vec3::Y));
 }
-
 
 #[derive(Actionlike, PartialEq, Eq, Hash, Clone, Copy, Debug, Reflect)]
 enum Action {
@@ -157,6 +157,7 @@ fn setup(
                 ..default()
             }
             .into(),
+            dither: DebandDither::Disabled,
             transform: Transform::from_xyz(5.0 * (PI/4.0_f32).sin(), 2.88675, 5.0 * (PI/4.0_f32).cos()).looking_at(Vec3::ZERO, Vec3::Y),
             ..default()
         },
