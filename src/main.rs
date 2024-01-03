@@ -6,19 +6,20 @@ use std::f32::consts::{PI, TAU};
 
 use bevy::{
     prelude::*,
-    render::camera::ScalingMode,
+    render::{camera::ScalingMode, view::ViewTarget},
     core_pipeline::{
         prepass::{DepthPrepass, MotionVectorPrepass, DeferredPrepass, NormalPrepass}, tonemapping::DebandDither,
-    },
+    }, pbr::DefaultOpaqueRendererMethod,
 };
 
+use bevy_editor_pls::EditorPlugin;
 use leafwing_input_manager::prelude::*;
 
 use bevy_inspector_egui:: {
     prelude::*,
-    quick::{
-        WorldInspectorPlugin,
-    }
+    // quick::{
+    //     WorldInspectorPlugin,
+    // }
 };
 
 use crate::postprocessing::postprocessing::{PostProcessPlugin, PostProcessSettings};
@@ -26,10 +27,13 @@ use crate::postprocessing::postprocessing::{PostProcessPlugin, PostProcessSettin
 fn main() {
     App::new()
         .insert_resource(Msaa::Off)
+        // .insert_resource(DefaultOpaqueRendererMethod::deferred())
+        .insert_resource(ClearColor(Color::rgb(0.0, 0.0, 0.0)))
         .register_type::<CameraState>()
         .add_plugins(DefaultPlugins)
         .add_plugins(PostProcessPlugin)
-        .add_plugins(WorldInspectorPlugin::new())
+        .add_plugins(EditorPlugin::default())
+        // .add_plugins(WorldInspectorPlugin::new())
         .add_plugins(InputManagerPlugin::<Action>::default())
         .add_systems(Startup, setup)
         .add_systems(Update, move_camera)
@@ -98,7 +102,7 @@ fn update_camera(
     let transform = &mut camera.1;
 
     let mut angle = state.direction as i32 as f32 / 8.0 * TAU;
-    angle += (time.elapsed_seconds() * 1.5).sin() * 0.33;
+    angle += (time.elapsed_seconds() * 1.5).sin() * 0.13;
     state.angle = lerp_angle(state.angle, angle, time.delta_seconds() * 10.0);
 
     let tf = Transform::from_xyz(5.0 * state.angle.sin(), 2.88675, 5.0 * state.angle.cos()).looking_at(Vec3::ZERO, Vec3::Y);
@@ -172,7 +176,7 @@ fn setup(
             direction: CameraDirection::NW,
         },
         PostProcessSettings {
-            pixel_scale: 4.0,
+            pixel_scale: 3.0,
             ..default()
         },
         DepthPrepass,
@@ -181,34 +185,56 @@ fn setup(
         DeferredPrepass,
     ));
 
+    let grass_material = materials.add(StandardMaterial {
+        base_color: Color::rgb_u8(30, 144, 77),
+        metallic: 0.0,
+        perceptual_roughness: 1.0,
+        ..default()
+    });
+
+    let stone_material = materials.add(StandardMaterial {
+        base_color: Color::rgb_u8(155, 169, 192),
+        metallic: 1.0,
+        perceptual_roughness: 0.95,
+        ..default()
+    });
+
     // plane
     commands.spawn(PbrBundle {
         mesh: meshes.add(shape::Plane::from_size(5.0).into()),
-        material: materials.add(Color::rgb(0.3, 0.5, 0.3).into()),
+        material: grass_material.clone(),
         ..default()
     });
+    
     // cubes
     commands.spawn(PbrBundle {
         mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
-        material: materials.add(Color::rgb(0.8, 0.7, 0.6).into()),
+        material: stone_material.clone(),
         transform: Transform::from_xyz(1.5, 0.5, 1.5),
         ..default()
     });
+
+    let mut icosphere: Mesh = shape::Icosphere{ radius: 0.5, subdivisions: 1 }.try_into().unwrap();
+
+    // Shade icosphere unsmoothed
+    icosphere.duplicate_vertices();
+    icosphere.compute_flat_normals();
+
     commands.spawn(PbrBundle {
-        mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
-        material: materials.add(Color::rgb(0.8, 0.7, 0.6).into()),
+        mesh: meshes.add(icosphere),
+        material: stone_material.clone(),
         transform: Transform::from_xyz(1.5, 0.5, -1.5),
         ..default()
     });
     commands.spawn(PbrBundle {
         mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
-        material: materials.add(Color::rgb(0.8, 0.7, 0.6).into()),
+        material: stone_material.clone(),
         transform: Transform::from_xyz(-1.5, 0.5, 1.5),
         ..default()
     });
     commands.spawn(PbrBundle {
         mesh: meshes.add(Mesh::from(shape::UVSphere { radius: 0.5, sectors: 32, stacks: 16 })),
-        material: materials.add(Color::rgb(0.8, 0.7, 0.6).into()),
+        material: stone_material.clone(),
         transform: Transform::from_xyz(-1.5, 0.5, -1.5),
         ..default()
     });
@@ -217,4 +243,16 @@ fn setup(
         transform: Transform::from_xyz(3.0, 8.0, 5.0),
         ..default()
     });
+    // directional light
+    commands.spawn(DirectionalLightBundle {
+        directional_light: DirectionalLight {
+            color: Color::rgb(0.8, 0.7, 0.6),
+            illuminance: 40000.0,
+            shadows_enabled: true,
+            ..default()
+        },
+        transform: Transform::from_rotation(Quat::from_rotation_x(-std::f32::consts::PI / 3.0)),
+        ..default()
+    });
+
 }

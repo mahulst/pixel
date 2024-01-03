@@ -1,7 +1,7 @@
 use bevy::{
   core_pipeline::{
       core_3d,
-      fullscreen_vertex_shader::fullscreen_shader_vertex_state, prepass::{ViewPrepassTextures},
+      fullscreen_vertex_shader::fullscreen_shader_vertex_state, prepass::ViewPrepassTextures,
   },
   ecs::query::QueryItem,
   prelude::*,
@@ -18,15 +18,19 @@ use bevy::{
           MultisampleState, Operations, PipelineCache, PrimitiveState, RenderPassColorAttachment,
           RenderPassDescriptor, RenderPipelineDescriptor, Sampler, SamplerBindingType,
           SamplerDescriptor, ShaderStages, ShaderType, TextureFormat, TextureSampleType,
-          TextureViewDimension,
+          TextureViewDimension, TextureDimension, Extent3d, TextureUsages,
       },
       renderer::{RenderContext, RenderDevice},
-      texture::BevyDefault,
+      texture::{BevyDefault, CompressedImageFormats, ImageType},
       view::{ViewTarget, ViewUniforms, ViewUniform, ViewUniformOffset},
-      RenderApp,
+      RenderApp, render_asset::RenderAssets, extract_resource::{ExtractResourcePlugin, ExtractResource},
   }, window::WindowResized,
 };
 
+#[derive(Resource, Clone, ExtractResource)]
+pub struct PixelArtLUT {
+    db32: Handle<Image>
+}
 
 pub struct PostProcessPlugin;
 
@@ -39,9 +43,34 @@ impl Plugin for PostProcessPlugin {
 
         app.add_systems(Update, resize_window);
 
-        app.insert_resource(ViewUniformCache {
-            uniforms: None,
-        });
+        if !app.world.is_resource_added::<PixelArtLUT>() {
+            let mut images = app.world.resource_mut::<Assets<Image>>();
+
+            let mut lut_texture = Image::from_buffer(
+                include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/luts/db32.png")),
+                ImageType::Extension("png"),
+                CompressedImageFormats::NONE,
+                false,
+                bevy::render::texture::ImageSampler::nearest(),
+            ).unwrap();
+
+            lut_texture.texture_descriptor.dimension = TextureDimension::D3;
+            lut_texture.texture_descriptor.size = Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 64,
+            };
+            lut_texture.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
+            lut_texture.texture_descriptor.format = TextureFormat::Rgba8Unorm;
+
+            let lut = PixelArtLUT {
+                db32: images.add(lut_texture),
+            };
+            
+            app.insert_resource(lut);
+        }
+
+        app.add_plugins(ExtractResourcePlugin::<PixelArtLUT>::default());
 
         let Ok(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -109,9 +138,22 @@ impl ViewNode for PostProcessNode {
 
         let post_process = view_target.post_process_write();
 
-        let (Some(prepass_depth_texture), Some(prepass_normal_texture)) = (&prepass_textures.depth, &prepass_textures.normal) else {
+        let (
+            Some(prepass_depth_texture),
+            Some(prepass_normal_texture),
+            Some(prepass_deferred_texture),
+        ) = (
+            &prepass_textures.depth,
+            &prepass_textures.normal,
+            &prepass_textures.deferred,
+        ) else {
             return Ok(());
         };
+
+        let images = world.resource::<RenderAssets<Image>>();
+        let lut_res = world.resource::<PixelArtLUT>();
+
+        let lut_image = images.get(&lut_res.db32).unwrap();
 
         let view_uniforms_resource = world.resource::<ViewUniforms>();
 
@@ -125,6 +167,8 @@ impl ViewNode for PostProcessNode {
                 &post_process_pipeline.sampler,
                 &prepass_depth_texture.default_view,
                 &prepass_normal_texture.default_view,
+                &prepass_deferred_texture.default_view,
+                &lut_image.texture_view,
             )),
         );
 
@@ -156,6 +200,8 @@ struct PostProcessPipeline {
 impl FromWorld for PostProcessPipeline {
     fn from_world(world: &mut World) -> Self {
         let render_device = world.resource::<RenderDevice>();
+
+        // let sampler = render_device.create_sampler(&SamplerDescriptor::default());
 
         let layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("post_process_bind_group_layout"),
@@ -222,6 +268,28 @@ impl FromWorld for PostProcessPipeline {
                     },
                     count: None,
                 },
+                // Deferred prepass texture
+                BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Texture {
+                        sample_type: TextureSampleType::Uint,
+                        view_dimension: TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // LUT texture
+                BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Texture {
+                        sample_type: TextureSampleType::Float { filterable: true },
+                        view_dimension: TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -269,11 +337,6 @@ pub struct PostProcessSettings {
     // WebGL2 structs must be 16 byte aligned.
     #[cfg(feature = "webgl2")]
     _webgl2_padding: Vec3,
-}
-
-#[derive(Resource, Default)]
-pub struct ViewUniformCache {
-    pub(crate) uniforms: Option<Vec<ViewUniform>>,
 }
 
 fn resize_window(
