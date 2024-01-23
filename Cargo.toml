@@ -43,7 +43,7 @@ features = [
   # "android_shared_stdcxx",
   "tonemapping_luts",
   "default_font",
-  "webgl2",
+  # "webgl2",
   "file_watcher",
 ]
 

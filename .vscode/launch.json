@@ -23,7 +23,11 @@
           "cwd": "${workspaceFolder}",
           "env": {
               "CARGO_MANIFEST_DIR": "${workspaceFolder}",
+              "RUST_BACKTRACE": "1",
           },
+          "sourceMap": {
+            "/rustc/f688dd684faca5b31b156fac2c6e0ae81fc9bc90/": "/home/nimph/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust",
+          }
       },
       {
           "type": "lldb",

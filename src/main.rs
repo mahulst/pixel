@@ -1,258 +1,65 @@
 //! Shows how to create a 3D orthographic view (for isometric-look games or CAD applications).
 
-pub mod postprocessing;
+mod postpixel;
+mod transform_animations;
+mod isocam;
 
-use std::f32::consts::{PI, TAU};
+mod test_scene;
+mod camera_setup;
 
 use bevy::{
-    prelude::*,
-    render::{camera::ScalingMode, view::ViewTarget},
-    core_pipeline::{
-        prepass::{DepthPrepass, MotionVectorPrepass, DeferredPrepass, NormalPrepass}, tonemapping::DebandDither,
-    }, pbr::DefaultOpaqueRendererMethod,
+  prelude::*,
+  window::WindowResized,
 };
 
 use bevy_editor_pls::EditorPlugin;
-use leafwing_input_manager::prelude::*;
 
-use bevy_inspector_egui:: {
-    prelude::*,
-    // quick::{
-    //     WorldInspectorPlugin,
-    // }
+use transform_animations::TransformAnimationPlugin;
+
+use crate::postpixel::{
+  PostPixelPlugin,
+  PostPixelSettings
 };
 
-use crate::postprocessing::postprocessing::{PostProcessPlugin, PostProcessSettings};
+use crate::isocam::IsoCameraPlugin;
 
 fn main() {
-    App::new()
-        .insert_resource(Msaa::Off)
-        // .insert_resource(DefaultOpaqueRendererMethod::deferred())
-        .insert_resource(ClearColor(Color::rgb(0.0, 0.0, 0.0)))
-        .register_type::<CameraState>()
-        .add_plugins(DefaultPlugins)
-        .add_plugins(PostProcessPlugin)
-        .add_plugins(EditorPlugin::default())
-        // .add_plugins(WorldInspectorPlugin::new())
-        .add_plugins(InputManagerPlugin::<Action>::default())
-        .add_systems(Startup, setup)
-        .add_systems(Update, move_camera)
-        .add_systems(Update, update_camera)
-        .run();
+  App::new()
+    .insert_resource(Msaa::Off)
+    // .insert_resource(DefaultOpaqueRendererMethod::deferred())
+    .insert_resource(ClearColor(Color::rgb(0.0, 0.0, 0.0)))
+    .insert_resource(AmbientLight {
+      color: Color::rgb(0.066, 0.066, 0.066),
+      brightness: 0.5,
+     })
+    .add_plugins(DefaultPlugins)
+    .add_plugins(PostPixelPlugin)
+    // .add_plugins(ScreenSpaceAmbientOcclusionPlugin)
+
+    .add_plugins(EditorPlugin::default())
+    // .add_plugins(EditorPlugin::in_new_window(EditorPlugin::default(), Window::default()))
+    // .add_plugins(WorldInspectorPlugin::new())
+
+    .add_plugins(IsoCameraPlugin)
+    .add_plugins(TransformAnimationPlugin)
+
+    .add_plugins((
+      camera_setup::CameraSetupPlugin,
+      test_scene::TestScenePlugin,
+    ))
+
+    .add_systems(Update, resize_window)
+    .run();
 }
 
-#[derive(Default, Clone, Copy, Debug, Reflect)]
-enum CameraDirection {
-    NW = 3,  N = 2,  NE = 1,
-     W = 4, #[default]E = 0,
-    SW = 5,  S = 6,  SE = 7,
-}
-
-impl CameraDirection {
-    fn from(n: i32) -> CameraDirection {
-        match n {
-            0 => CameraDirection::E,
-            1 => CameraDirection::NE,
-            2 => CameraDirection::N,
-            3 => CameraDirection::NW,
-            4 => CameraDirection::W,
-            5 => CameraDirection::SW,
-            6 => CameraDirection::S,
-            7 => CameraDirection::SE,
-            _ => CameraDirection::E,
-        }
-    }
-}
-
-#[derive(Default, Component, Clone, Copy, Debug, Reflect, InspectorOptions)]
-#[reflect(Component, InspectorOptions)] 
-struct CameraState {
-    target: Vec3,
-    distance: f32,
-    angle: f32,
-    direction: CameraDirection,
-}
-
-#[derive(Bundle)]
-struct CameraBundle {
-    camera: Camera3dBundle,
-    state: CameraState,
-}
-
-fn lerp_angle(from: f32, to: f32, t: f32) -> f32 {
-    let mut angle = to - from;
-    while angle > PI {
-        angle -= TAU;
-    }
-    while angle < -PI {
-        angle += TAU;
-    }
-    if (angle).abs() < 0.01 {
-        return to;
-    }
-    from + angle * t
-}
-
-fn update_camera(
-    mut camera: Query<(&mut CameraState, &mut Transform)>,
-    time: Res<Time>,
+fn resize_window(
+  mut resize_event: EventReader<WindowResized>,
+  mut pps: Query<&mut PostPixelSettings>,
 ) {
-    let mut camera = camera.single_mut();
-    let state = &mut camera.0;
-    let transform = &mut camera.1;
-
-    let mut angle = state.direction as i32 as f32 / 8.0 * TAU;
-    angle += (time.elapsed_seconds() * 1.5).sin() * 0.13;
-    state.angle = lerp_angle(state.angle, angle, time.delta_seconds() * 10.0);
-
-    let tf = Transform::from_xyz(5.0 * state.angle.sin(), 2.88675, 5.0 * state.angle.cos()).looking_at(Vec3::ZERO, Vec3::Y);
-    transform.translation = tf.translation;
-    transform.rotation = tf.rotation;
-        // Transform::from_xyz(state.distance * (PI/4.0_f32).sin(), state.distance * (PI/6.0_f32.sin()), state.distance * (PI/4.0_f32).cos()).looking_at(Vec3::ZERO, Vec3::Y));
-}
-
-#[derive(Actionlike, PartialEq, Eq, Hash, Clone, Copy, Debug, Reflect)]
-enum Action {
-    CameraLeft,
-    CameraRight,
-}
-
-fn move_camera(
-    query: Query<&ActionState<Action>, With<Camera>>,
-    mut camera: Query<&mut CameraState>,
-) {
-    let mut camera = camera.single_mut();
-
-    let action_state = query.single();
-
-    let mut new_dir = camera.direction as i32;
-    
-    if action_state.just_pressed(Action::CameraLeft) {
-        new_dir += 1;
+  // let mut pps = pps.single_mut();
+  for mut pps in pps.iter_mut() {
+    for e in resize_event.read() {
+      pps.pixel_scale = (e.height as f32 / 480.0).ceil();
     }
-    if action_state.just_pressed(Action::CameraRight) {
-        new_dir -= 1;
-    }
-
-    if new_dir < 0 {
-        new_dir = 7;
-    } else if new_dir > 7 {
-        new_dir = 0;
-    }
-    
-    camera.direction = CameraDirection::from(new_dir);
-}
-
-/// set up a simple 3D scene
-fn setup(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    // let resolution = Vec2::new(640.0, 480.0);
-
-    commands.spawn((
-        Camera3dBundle {
-            projection: OrthographicProjection {
-                scale: 3.0,
-                scaling_mode: ScalingMode::FixedVertical(2.0),
-                near: 0.1,
-                far: 16.0,
-                ..default()
-            }
-            .into(),
-            dither: DebandDither::Disabled,
-            transform: Transform::from_xyz(5.0 * (PI/4.0_f32).sin(), 2.88675, 5.0 * (PI/4.0_f32).cos()).looking_at(Vec3::ZERO, Vec3::Y),
-            ..default()
-        },
-        InputManagerBundle {
-            action_state: ActionState::<Action>::default(),
-            input_map: InputMap::new([(KeyCode::A, Action::CameraLeft), (KeyCode::D, Action::CameraRight)]),
-        },
-        CameraState {
-            target: Vec3::ZERO,
-            distance: 8.66,
-            angle: 45.0 / 360.0 * std::f32::consts::TAU,
-            direction: CameraDirection::NW,
-        },
-        PostProcessSettings {
-            pixel_scale: 3.0,
-            ..default()
-        },
-        DepthPrepass,
-        NormalPrepass,
-        MotionVectorPrepass,
-        DeferredPrepass,
-    ));
-
-    let grass_material = materials.add(StandardMaterial {
-        base_color: Color::rgb_u8(30, 144, 77),
-        metallic: 0.0,
-        perceptual_roughness: 1.0,
-        ..default()
-    });
-
-    let stone_material = materials.add(StandardMaterial {
-        base_color: Color::rgb_u8(155, 169, 192),
-        metallic: 1.0,
-        perceptual_roughness: 0.95,
-        ..default()
-    });
-
-    // plane
-    commands.spawn(PbrBundle {
-        mesh: meshes.add(shape::Plane::from_size(5.0).into()),
-        material: grass_material.clone(),
-        ..default()
-    });
-    
-    // cubes
-    commands.spawn(PbrBundle {
-        mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
-        material: stone_material.clone(),
-        transform: Transform::from_xyz(1.5, 0.5, 1.5),
-        ..default()
-    });
-
-    let mut icosphere: Mesh = shape::Icosphere{ radius: 0.5, subdivisions: 1 }.try_into().unwrap();
-
-    // Shade icosphere unsmoothed
-    icosphere.duplicate_vertices();
-    icosphere.compute_flat_normals();
-
-    commands.spawn(PbrBundle {
-        mesh: meshes.add(icosphere),
-        material: stone_material.clone(),
-        transform: Transform::from_xyz(1.5, 0.5, -1.5),
-        ..default()
-    });
-    commands.spawn(PbrBundle {
-        mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
-        material: stone_material.clone(),
-        transform: Transform::from_xyz(-1.5, 0.5, 1.5),
-        ..default()
-    });
-    commands.spawn(PbrBundle {
-        mesh: meshes.add(Mesh::from(shape::UVSphere { radius: 0.5, sectors: 32, stacks: 16 })),
-        material: stone_material.clone(),
-        transform: Transform::from_xyz(-1.5, 0.5, -1.5),
-        ..default()
-    });
-    // light
-    commands.spawn(PointLightBundle {
-        transform: Transform::from_xyz(3.0, 8.0, 5.0),
-        ..default()
-    });
-    // directional light
-    commands.spawn(DirectionalLightBundle {
-        directional_light: DirectionalLight {
-            color: Color::rgb(0.8, 0.7, 0.6),
-            illuminance: 40000.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        transform: Transform::from_rotation(Quat::from_rotation_x(-std::f32::consts::PI / 3.0)),
-        ..default()
-    });
-
+  }
 }
